@@ -2,63 +2,7 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Token = require('../models/Token');
-
-// Helper function to create and send tokens
-const createSendToken = async (user, statusCode, res, rememberMe = false) => {
-  // Generate tokens
-  const accessToken = user.generateAccessToken();
-  const refreshToken = user.generateRefreshToken();
-
-  // Add refresh token to user's refresh tokens array
-  user.addRefreshToken(refreshToken);
-  await user.save({ validateBeforeSave: false });
-
-  // Cookie options for access token (shorter expiry)
-  const accessTokenOptions = {
-    expires: new Date(Date.now() + 15 * 60 * 1000), // 15 minutes
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-    path: '/'
-  };
-
-  // Cookie options for refresh token (longer expiry)
-  const refreshTokenOptions = {
-    expires: rememberMe 
-      ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days if remember me
-      : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days default
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-    path: '/'
-  };
-
-  // Set both access and refresh token cookies
-  res.cookie('accessToken', accessToken, accessTokenOptions);
-  res.cookie('refreshToken', refreshToken, refreshTokenOptions);
-
-  // Update last login
-  user.lastLogin = new Date();
-  await user.save({ validateBeforeSave: false });
-
-  // Remove password from output
-  user.password = undefined;
-  user.refreshTokens = undefined;
-
-  res.status(statusCode).json({
-    status: 'success',
-    message: 'Authentication successful',
-    data: {
-      user,
-      accessToken, // Return in response body as well
-      refreshToken, // Return in response body as well
-      tokenExpiry: new Date(Date.now() + 15 * 60 * 1000) // 15 minutes
-    }
-  });
-
-  console.log(`Access Token: ${accessToken}`);
-  console.log(`Refresh Token: ${refreshToken}`);
-};
+const { getCookieOptions, createSendToken, getClearCookieOptions } = require('../utils/jwt');
 
 // Register new user
 const register = async (req, res) => {
@@ -97,11 +41,16 @@ const register = async (req, res) => {
 const login = async (req, res) => {
   try {
     const { email, password, rememberMe } = req.body;
+    const isProduction = process.env.NODE_ENV === 'production';
+    const clearCookieOptions = getClearCookieOptions(isProduction);
 
     // Check if user exists and password is correct
     const user = await User.findOne({ email }).select('+password');
 
     if (!user || !(await user.correctPassword(password, user.password))) {
+      // Ensure any existing auth cookies are cleared on failed login
+      res.clearCookie('accessToken', clearCookieOptions);
+      res.clearCookie('refreshToken', clearCookieOptions);
       return res.status(401).json({
         status: 'fail',
         message: 'Incorrect email or password'
@@ -110,6 +59,9 @@ const login = async (req, res) => {
 
     // Check if account is active
     if (!user.isActive) {
+      // Clear cookies for deactivated accounts
+      res.clearCookie('accessToken', clearCookieOptions);
+      res.clearCookie('refreshToken', clearCookieOptions);
       return res.status(401).json({
         status: 'fail',
         message: 'Your account has been deactivated. Please contact support.'
@@ -132,7 +84,6 @@ const logout = async (req, res) => {
   try {
     const refreshToken = req.cookies.refreshToken;
 
-    // Remove refresh token from user's tokens array
     if (refreshToken) {
       const user = await User.findByRefreshToken(refreshToken);
       if (user) {
@@ -152,22 +103,16 @@ const logout = async (req, res) => {
         });
       } catch (err) {
         // Token might be expired or invalid, ignore
-        console.log('Token verification failed during logout:', err.message);
       }
     }
 
-    // Clear both access and refresh token cookies with the same options used when setting them
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      path: '/'
-    };
+    const isProduction = process.env.NODE_ENV === 'production';
+    const cookieOptions = getClearCookieOptions(isProduction);
     
     res.clearCookie('accessToken', cookieOptions);
     res.clearCookie('refreshToken', cookieOptions);
 
-    res.status(200).json({
+    res.json({
       status: 'success',
       message: 'Logged out successfully'
     });
@@ -186,11 +131,10 @@ const refreshToken = async (req, res) => {
     const user = req.user;
     const oldRefreshToken = req.refreshToken;
 
-    // Generate new tokens
     const newAccessToken = user.generateAccessToken();
     const newRefreshToken = user.generateRefreshToken();
 
-    // Remove old refresh token and add new one
+    // Update user's refresh tokens
     user.removeRefreshToken(oldRefreshToken);
     user.addRefreshToken(newRefreshToken);
     await user.save({ validateBeforeSave: false });
@@ -209,34 +153,18 @@ const refreshToken = async (req, res) => {
       // Ignore if token verification fails
     }
 
-    // Cookie options for access token
-    const accessTokenOptions = {
-      expires: new Date(Date.now() + 15 * 60 * 1000), // 15 minutes
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      path: '/'
-    };
+    const isProduction = process.env.NODE_ENV === 'production';
 
-    // Cookie options for refresh token
-    const refreshTokenOptions = {
-      expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      path: '/'
-    };
+    // Set new tokens in cookies
+    res.cookie('accessToken', newAccessToken, getCookieOptions(isProduction, 15 * 60 * 1000));
+    res.cookie('refreshToken', newRefreshToken, getCookieOptions(isProduction, 7 * 24 * 60 * 60 * 1000));
 
-    // Set both new tokens in cookies
-    res.cookie('accessToken', newAccessToken, accessTokenOptions);
-    res.cookie('refreshToken', newRefreshToken, refreshTokenOptions);
-
-    res.status(200).json({
+    res.json({
       status: 'success',
       message: 'Token refreshed successfully',
       data: {
         accessToken: newAccessToken,
-        tokenExpiry: new Date(Date.now() + 15 * 60 * 1000) // 15 minutes
+        tokenExpiry: new Date(Date.now() + 15 * 60 * 1000)
       }
     });
   } catch (error) {
@@ -253,22 +181,19 @@ const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
 
-    // Get user based on posted email
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(404).json({
         status: 'fail',
-        message: 'There is no user with that email address'
+        message: 'No user found with that email address'
       });
     }
 
-    // Generate random reset token
     const resetToken = user.createPasswordResetToken();
     await user.save({ validateBeforeSave: false });
 
-    // For now, just return the token (in production, send via email)
     // TODO: Implement email service for password reset
-    res.status(200).json({
+    res.json({
       status: 'success',
       message: 'Password reset token generated',
       resetToken // Remove this in production
@@ -287,15 +212,12 @@ const resetPassword = async (req, res) => {
   try {
     const { token, password } = req.body;
 
-    // Get user based on the token
     const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
-
     const user = await User.findOne({
       passwordResetToken: hashedToken,
       passwordResetExpires: { $gt: Date.now() }
     });
 
-    // If token has not expired and there is a user, set the new password
     if (!user) {
       return res.status(400).json({
         status: 'fail',
@@ -308,7 +230,6 @@ const resetPassword = async (req, res) => {
     user.passwordResetExpires = undefined;
     await user.save();
 
-    // Log in the user and send JWT
     createSendToken(user, 200, res);
   } catch (error) {
     console.error('Reset password error:', error);
@@ -324,10 +245,8 @@ const changePassword = async (req, res) => {
   try {
     const { currentPassword, password } = req.body;
 
-    // Get user from collection (with password field)
     const user = await User.findById(req.user.id).select('+password');
 
-    // Check if posted current password is correct
     if (!(await user.correctPassword(currentPassword, user.password))) {
       return res.status(400).json({
         status: 'fail',
@@ -335,11 +254,9 @@ const changePassword = async (req, res) => {
       });
     }
 
-    // If so, update password
     user.password = password;
     await user.save();
 
-    // Log user in, send JWT
     createSendToken(user, 200, res);
   } catch (error) {
     console.error('Change password error:', error);
@@ -354,12 +271,9 @@ const changePassword = async (req, res) => {
 const getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
-
-    res.status(200).json({
+    res.json({
       status: 'success',
-      data: {
-        user
-      }
+      data: { user }
     });
   } catch (error) {
     console.error('Get user error:', error);
@@ -375,7 +289,6 @@ const updateMe = async (req, res) => {
   try {
     const { firstName, lastName, email } = req.body;
 
-    // Check if user is trying to update password
     if (req.body.password || req.body.passwordConfirm) {
       return res.status(400).json({
         status: 'fail',
@@ -383,7 +296,6 @@ const updateMe = async (req, res) => {
       });
     }
 
-    // Check if email already exists (if updating email)
     if (email && email !== req.user.email) {
       const existingUser = await User.findOne({ email });
       if (existingUser) {
@@ -394,19 +306,16 @@ const updateMe = async (req, res) => {
       }
     }
 
-    // Update user document
     const updatedUser = await User.findByIdAndUpdate(
       req.user.id,
       { firstName, lastName, email },
       { new: true, runValidators: true }
     );
 
-    res.status(200).json({
+    res.json({
       status: 'success',
       message: 'Profile updated successfully',
-      data: {
-        user: updatedUser
-      }
+      data: { user: updatedUser }
     });
   } catch (error) {
     console.error('Update profile error:', error);
@@ -421,7 +330,6 @@ const updateMe = async (req, res) => {
 const deleteMe = async (req, res) => {
   try {
     await User.findByIdAndUpdate(req.user.id, { isActive: false });
-
     res.status(204).json({
       status: 'success',
       data: null

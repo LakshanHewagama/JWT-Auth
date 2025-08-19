@@ -1,89 +1,6 @@
 const User = require('../models/User');
 const Token = require('../models/Token');
 
-// Get admin dashboard data
-const getDashboard = async (req, res) => {
-  try {
-    // Get user statistics
-    const totalUsers = await User.countDocuments();
-    const activeUsers = await User.countDocuments({ isActive: true });
-    const adminUsers = await User.countDocuments({ role: 'admin' });
-    const regularUsers = await User.countDocuments({ role: 'user' });
-
-    // Get recent users (last 10)
-    const recentUsers = await User.find()
-      .select('firstName lastName email role isActive createdAt lastLogin')
-      .sort({ createdAt: -1 })
-      .limit(10);
-
-    // Get token statistics
-    const totalTokens = await Token.countDocuments();
-    const blacklistedTokens = await Token.countDocuments({ blacklisted: true });
-    const activeTokens = totalTokens - blacklistedTokens;
-
-    // Calculate user registration trends (last 7 days)
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-    const userTrends = await User.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: sevenDaysAgo }
-        }
-      },
-      {
-        $group: {
-          _id: {
-            $dateToString: {
-              format: '%Y-%m-%d',
-              date: '$createdAt'
-            }
-          },
-          count: { $sum: 1 }
-        }
-      },
-      {
-        $sort: { _id: 1 }
-      }
-    ]);
-
-    // Sample dashboard data
-    const dashboardData = {
-      overview: {
-        totalUsers,
-        activeUsers,
-        adminUsers,
-        regularUsers,
-        totalTokens,
-        activeTokens,
-        blacklistedTokens
-      },
-      userStats: {
-        activePercentage: totalUsers > 0 ? Math.round((activeUsers / totalUsers) * 100) : 0,
-        adminPercentage: totalUsers > 0 ? Math.round((adminUsers / totalUsers) * 100) : 0
-      },
-      recentUsers,
-      userTrends,
-      systemInfo: {
-        serverUptime: process.uptime(),
-        memoryUsage: process.memoryUsage(),
-        nodeVersion: process.version,
-        environment: process.env.NODE_ENV || 'development'
-      }
-    };
-
-    res.status(200).json({
-      status: 'success',
-      data: dashboardData
-    });
-  } catch (error) {
-    console.error('Dashboard error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Error fetching dashboard data'
-    });
-  }
-};
 
 // Get all users with pagination
 const getAllUsers = async (req, res) => {
@@ -92,21 +9,22 @@ const getAllUsers = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    // Build filter object
     const filter = {};
     if (req.query.role) filter.role = req.query.role;
     if (req.query.isActive !== undefined) filter.isActive = req.query.isActive === 'true';
 
-    const users = await User.find(filter)
-      .select('firstName lastName email role isActive createdAt lastLogin')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
+    const [users, totalUsers] = await Promise.all([
+      User.find(filter)
+        .select('firstName lastName email role isActive createdAt lastLogin')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      User.countDocuments(filter)
+    ]);
 
-    const totalUsers = await User.countDocuments(filter);
     const totalPages = Math.ceil(totalUsers / limit);
 
-    res.status(200).json({
+    res.json({
       status: 'success',
       data: {
         users,
@@ -141,7 +59,7 @@ const getUserById = async (req, res) => {
       });
     }
 
-    res.status(200).json({
+    res.json({
       status: 'success',
       data: { user }
     });
@@ -160,7 +78,6 @@ const updateUserRole = async (req, res) => {
     const { role } = req.body;
     const userId = req.params.id;
 
-    // Validate role
     if (!['user', 'admin'].includes(role)) {
       return res.status(400).json({
         status: 'fail',
@@ -168,7 +85,6 @@ const updateUserRole = async (req, res) => {
       });
     }
 
-    // Prevent admin from changing their own role
     if (userId === req.user.id.toString()) {
       return res.status(400).json({
         status: 'fail',
@@ -189,7 +105,7 @@ const updateUserRole = async (req, res) => {
       });
     }
 
-    res.status(200).json({
+    res.json({
       status: 'success',
       data: { user }
     });
@@ -207,7 +123,6 @@ const toggleUserStatus = async (req, res) => {
   try {
     const userId = req.params.id;
 
-    // Prevent admin from deactivating themselves
     if (userId === req.user.id.toString()) {
       return res.status(400).json({
         status: 'fail',
@@ -226,7 +141,7 @@ const toggleUserStatus = async (req, res) => {
     user.isActive = !user.isActive;
     await user.save({ validateBeforeSave: false });
 
-    res.status(200).json({
+    res.json({
       status: 'success',
       data: { 
         user: {
@@ -253,7 +168,6 @@ const deleteUser = async (req, res) => {
   try {
     const userId = req.params.id;
 
-    // Prevent admin from deleting themselves
     if (userId === req.user.id.toString()) {
       return res.status(400).json({
         status: 'fail',
@@ -274,7 +188,7 @@ const deleteUser = async (req, res) => {
       });
     }
 
-    res.status(200).json({
+    res.json({
       status: 'success',
       message: 'User deactivated successfully',
       data: { user }
@@ -287,24 +201,21 @@ const deleteUser = async (req, res) => {
     });
   }
 };
-
 // Get system statistics
 const getSystemStats = async (req, res) => {
   try {
-    const stats = {
-      database: {
-        totalUsers: await User.countDocuments(),
-        totalTokens: await Token.countDocuments(),
-        activeUsers: await User.countDocuments({ isActive: true }),
-        blacklistedTokens: await Token.countDocuments({ blacklisted: true })
-      },
-      server: {
-        uptime: process.uptime(),
-        memoryUsage: process.memoryUsage(),
-        nodeVersion: process.version,
-        environment: process.env.NODE_ENV || 'development'
-      },
-      usersByRole: await User.aggregate([
+    const [
+      totalUsers,
+      totalTokens,
+      activeUsers,
+      blacklistedTokens,
+      usersByRole
+    ] = await Promise.all([
+      User.countDocuments(),
+      Token.countDocuments(),
+      User.countDocuments({ isActive: true }),
+      Token.countDocuments({ blacklisted: true }),
+      User.aggregate([
         {
           $group: {
             _id: '$role',
@@ -312,9 +223,25 @@ const getSystemStats = async (req, res) => {
           }
         }
       ])
+    ]);
+
+    const stats = {
+      database: {
+        totalUsers,
+        totalTokens,
+        activeUsers,
+        blacklistedTokens
+      },
+      server: {
+        uptime: process.uptime(),
+        memoryUsage: process.memoryUsage(),
+        nodeVersion: process.version,
+        environment: process.env.NODE_ENV || 'development'
+      },
+      usersByRole
     };
 
-    res.status(200).json({
+    res.json({
       status: 'success',
       data: stats
     });
@@ -328,7 +255,6 @@ const getSystemStats = async (req, res) => {
 };
 
 module.exports = {
-  getDashboard,
   getAllUsers,
   getUserById,
   updateUserRole,

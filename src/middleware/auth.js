@@ -4,7 +4,7 @@ const Token = require('../models/Token');
 const { promisify } = require('util');
 
 // Protect routes - verify access token
-const protect = async (req, res, next) => {
+const authUserOnly = async (req, res, next) => {
   try {
     // 1) Getting token and check if it's there
     let token;
@@ -183,7 +183,7 @@ const verifyRefreshToken = async (req, res, next) => {
 };
 
 module.exports = {
-  protect,
+  authUserOnly,
   restrictTo,
   optionalAuth,
   verifyRefreshToken

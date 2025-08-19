@@ -1,7 +1,7 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const authController = require('../controllers/auth.controller');
-const { protect, verifyRefreshToken } = require('../middleware/auth');
+const { authUserOnly, verifyRefreshToken } = require('../middleware/auth');
 const { 
   validate,
   registerSchema,
@@ -77,7 +77,7 @@ router.get('/check-cookies', (req, res) => {
 });
 
 // Protected routes (require authentication)
-router.use(protect); // All routes after this middleware are protected
+router.use(authUserOnly); // All routes after this middleware are protected
 router.get('/me', authController.getMe);
 router.patch('/update-me', validate(updateProfileSchema), authController.updateMe);
 router.delete('/delete-me', authController.deleteMe);
