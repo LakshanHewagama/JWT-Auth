@@ -56,7 +56,7 @@ const adminOnly = async (req, res, next) => {
     req.user = currentUser;
     next();
   } catch (error) {
-    console.error('Admin middleware error:', error);
+    // console.error('Admin middleware error:', error);
     return res.status(401).json({
       status: 'fail',
       message: 'Invalid token. Please log in again.'
